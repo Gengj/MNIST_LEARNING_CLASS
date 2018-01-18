@@ -170,7 +170,7 @@ if __name__ == '__main__':
     print("-------------------START-------------------")
     tf.app.run()
 
-
+# 
 # -------------------START-------------------
 # Extracting train-images-idx3-ubyte.gz
 # Extracting train-labels-idx1-ubyte.gz
