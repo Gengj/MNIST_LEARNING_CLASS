@@ -14,7 +14,6 @@
 -------------------------------------------------
 """
 import os
-
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 import tensorflow as tf
@@ -106,6 +105,20 @@ def train(mnist):
     #                 因为标准答案y_是一个长度为10的一维数组，而该函数需要提供的是正确答案的数字
     #                 因此使用tf.argmax函数得到y_数组中最大值的编号，即正确答案的数字
     # '''
+
+    # 这个函数看名字都知道，是将稀疏表示的label与输出层计算出来结果做对比，函数的形式和参数如下：
+    #
+    # nn.sparse_softmax_cross_entropy_with_logits(logits, label, name=None)
+    #
+    # 第一个坑: logits表示从最后一个隐藏层线性变换输出的结果！假设类别数目为10，
+    #           那么对于每个样本这个logits应该是个10维的向量，且没有经过归一化，所有这个向量的元素和不为1。
+    #           然后这个函数会先将logits进行softmax归一化，然后与label表示的onehot向量比较，计算交叉熵。
+    #           也就是说，这个函数执行了三步（这里意思一下）：
+    #            sm = nn.softmax(logits)
+    #            onehot = tf.sparse_to_dense(label，…)
+    #            nn.sparse_cross_entropy(sm, onehot)
+    # 第二个坑: 输入的label是稀疏表示的，就是是一个[0，10）的一个整数，这我们都知道。
+    #           但是这个数必须是一维的！就是说，每个样本的期望类别只有一个，属于A类就不能属于其他类了。
     cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y, labels=tf.argmax(y_, 1))
 
     # 计算在当前batch中所有样例的交叉熵平均值
@@ -128,49 +141,93 @@ def train(mnist):
 
     # 使用tf.train.GradientDescentOptimizer优化算法来优化损失函数
     # 注意：这里损失函数包含了交叉上损失和l2正则化损失
+    # 注意：这里的train_step不是训练步数，而是每一步训练
     train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss, global_step=global_step)
 
+
+    # 在训练神经网络模型的时候，每过一遍数据既需要通过反响传播来更新神经网络的参数
+    # 又要更新每个参数的滑动平均值。
+    # 为了一次完成多个操作，TensorFlow提供tf.control_dependencies(control_inputs=)和tf.group(*input)
+    # 两种机制。
     with tf.control_dependencies([train_step, variable_averages_op]):
         train_op = tf.no_op(name='train')
+    # 以上语句和
+    # train_op = tf.group(train_step,variable_averages_op)
+    # 等价
 
+    # 检验滑动平均算法得到的神经网路前向结果是否正确
+    # 使用tf.argmax得到average_y和y_数组中最大值的编号，即正确答案的数字，第二个参数1表示在第一维上进行
+    # tf.argmax返回一个长度为batch的一维数组，数组中的值就是每一个样例对应的数字识别结果，交给tf.equal判断
+    # tf.equal判断两个张量的每一维是否相等，相等返回true，返回BOOL类型
     correct_prediction = tf.equal(tf.argmax(average_y, 1), tf.argmax(y_, 1))
+    # tf.cast()：Casts a tensor to a new type.
+    # 将bool类型转化为float32类型，再计算平均值。平均值=模型在这组训练上的准确率
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
+    # 开启会话，正式启动训练过程
     with tf.Session() as sess:
+        # 初始化全部变量
         tf.initialize_all_variables().run()
 
+        # 准备验证数据
+        # 一般在神经网络的训练过程中，会通过验证数据来大致判断停止的条件和评判训练的效果
         validate_feed = {
             x: mnist.validation.images,
             y_: mnist.validation.labels
         }
 
+        # 准备测试数据
+        # 在真实环境中，这部分数据是不可见的。
+        # 这个数据只是作为判断模型优劣的最后评价结果
         test_feed = {
             x: mnist.test.images,
             y_: mnist.test.labels
         }
 
+
+        # 迭代神经网络
+        # TRAING_STEP = 30000，训练30000轮
         for i in range(TRAING_STEP):
+            # 每1000轮输出一次在验证数据集上的测试结果
             if i % 1000 == 0:
+                # 计算滑动平均模型在验证数据上的准确率
+                # 因为MNISTS数据集比较小，所以一次可以处理所有的验证数据
+                # 为了计算方便，本程序没有将验证数据划分为更小的batch
+                # 而当神经网络模型比较复杂或者验证数据比较大时，太大的batch会导致计算时间过长或内存溢出的错误
                 validate_acc = sess.run(accuracy, feed_dict=validate_feed)
                 print("After %d training step(s),validation using average model is %g" % (i, validate_acc))
 
+            # 产生这一轮使用的batch个训练数据，并进行训练过程
             xs, ys = mnist.train.next_batch(BATCH_SIZE)
             sess.run(train_op, feed_dict={x: xs, y_: ys})
+            print("weights1:\n")
+            print(sess.run(weights1))
+            print("*************************************************")
 
+            print("weights2:\n")
+            print(sess.run(weights2))
+            print("*************************************************")
+
+        # 30000轮训练结束后，在测试数据上检测神经网络模型的最终正确率
         test_acc = sess.run(accuracy, feed_dict=test_feed)
         print("After %d training step(s),test accuracy using average model is %g" % (TRAING_STEP, test_acc))
 
-
+# 主程序入口
 def main(argv=None):
+    # 声明MNIST数据集的处理类mnist，mnist初始化时会自动下载数据
+    # 但本程序是直接将下载数据放在源代码根目录下，因为mnist下载时会报SSL的错
     mnist = input_data.read_data_sets("", one_hot=True)
+
     train(mnist)
 
 
 if __name__ == '__main__':
     print("-------------------START-------------------")
+
+    # TensorFlow提供的程序入口，tf.app.run()会调用上面定义的main函数
     tf.app.run()
 
-# 
+#
 # -------------------START-------------------
 # Extracting train-images-idx3-ubyte.gz
 # Extracting train-labels-idx1-ubyte.gz
